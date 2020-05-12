@@ -198,7 +198,6 @@ void extract_diagonal(const struct csr_matrix_t *A, double *d)
 	for (int i = 0; i < n; i++) {
 		d[i] = 0.0;
 
-		#pragma omp parallel for private(u)
 		for (u = Ap[i]; u < Ap[i + 1]; u++)
 			if (i == Aj[u])
 				d[i] += Ax[u];
@@ -256,8 +255,31 @@ double norm(const int n, const double *x)
 /* Solve Ax == b (the solution is written in x). Scratch must be preallocated of size 6n */
 void cg_solve(const struct csr_matrix_t *A, const double *b, double *x, const double epsilon, double *scratch, int nb_proc, int my_rank)
 {
-	int n = A->n;
-	int nz = A->nz;
+
+	if(my_rank == 0){
+		if(n % nb_proc != 0)
+			MPI_Abort(MPI_COMM_WORLD, -1); // A regler plus tard
+		int n = A->n;
+		int nz = A->nz;
+	}
+
+	MPI_Bcast(n, 1, MPI_INT, 0, MPI_COMM_WORLD);
+	MPI_Bcast(nz, 1, MPI_INT, 0, MPI_COMM_WORLD);
+	int nb_ligne = n / nb_proc;
+
+	fprintf(stderr, "rank == %d n = %d nz=%d\n", my_rank, n, nz);
+
+
+
+	tab_index_deb = malloc(sizeof(int)*nb_proc);
+	tab_index_fin = malloc(sizeof(int)*nb_proc);
+
+	for(int i = 0; i < nb_proc; i++){
+		tab_index_deb[i] = nb_ligne * i;
+		tab_index_fin[i] = (nb_ligne*(i+1))-1;
+	}
+
+
 
 	fprintf(stderr, "[CG] Starting iterative solver\n");
 	fprintf(stderr, "     ---> Working set : %.1fMbyte\n", 1e-6 * (12.0 * nz + 52.0 * n));
@@ -270,8 +292,10 @@ void cg_solve(const struct csr_matrix_t *A, const double *b, double *x, const do
 	double *d = scratch + 4 * n;	// diagonal entries of A (Jacobi preconditioning)
 
 	/* Isolate diagonal */
-	extract_diagonal(A, d);
+	if(my_rank == 0)
+		extract_diagonal(A, d);
 
+	MPI_Bcast(d, n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 	/*
 	 * This function follows closely the pseudo-code given in the (english)
 	 * Wikipedia page "Conjugate gradient method". This is the version with
@@ -279,16 +303,16 @@ void cg_solve(const struct csr_matrix_t *A, const double *b, double *x, const do
 	 */
 
 	/* We use x == 0 --- this avoids the first matrix-vector product. */
-	for (int i = 0; i < n; i++)
+	for (int i = tab_index_deb[my_rank]; i <= tab_index_fin[my_rank]; i++)
 		x[i] = 0.0;
-	for (int i = 0; i < n; i++)	// r <-- b - Ax == b (x0 = {0,...,0})
+	for (int i = tab_index_deb[my_rank]; i <= tab_index_fin[my_rank]; i++)	// r <-- b - Ax == b (x0 = {0,...,0})
 		r[i] = b[i];
-	for (int i = 0; i < n; i++)	// z <-- M^(-1).r
+	for (int i = tab_index_deb[my_rank]; i <= tab_index_fin[my_rank]; i++)	// z <-- M^(-1).r
 		z[i] = r[i] / d[i];
-	for (int i = 0; i < n; i++)	// p <-- z
+	for (int i = tab_index_deb[my_rank]; i <= tab_index_fin[my_rank]; i++)	// p <-- z
 		p[i] = z[i];
 
-	double rz = dot(n, r, z);
+	double rz = dot(nb_ligne, r, z);
 
 	double start = wtime();
 	double last_display = start;
@@ -298,21 +322,21 @@ void cg_solve(const struct csr_matrix_t *A, const double *b, double *x, const do
 		/* loop invariant : rz = dot(r, z) */
 		double old_rz = rz;
 
-		sp_gemv(A, p, q);	/* q <-- A.p*/ 
+		sp_gemv(A, p, q, tab_index_deb[my_rank], tab_index_fin[my_rank]);	/* q <-- A.p*/
 
-		double alpha = old_rz / dot(n, p, q);
+		double alpha = old_rz / dot(nb_ligne, p, q);
 
-		for (int i = 0; i < n; i++)	// x <-- x + alpha*p
+		for (int i = tab_index_deb[my_rank]; i <= tab_index_fin[my_rank]; i++)	// x <-- x + alpha*p
 			x[i] += alpha * p[i];
-		for (int i = 0; i < n; i++)	// r <-- r - alpha*q
+		for (int i = tab_index_deb[my_rank]; i <= tab_index_fin[my_rank]; i++)	// r <-- r - alpha*q
 			r[i] -= alpha * q[i];
-		for (int i = 0; i < n; i++)	// z <-- M^(-1).r
+		for (int i = tab_index_deb[my_rank]; i <= tab_index_fin[my_rank]; i++)	// z <-- M^(-1).r
 			z[i] = r[i] / d[i];
 
-		rz = dot(n, r, z);	// restore invariant
+		rz = dot(nb_ligne, r, z);	// restore invariant
 		double beta = rz / old_rz;
 
-		for (int i = 0; i < n; i++)	// p <-- z + beta*p
+		for (int i = tab_index_deb[my_rank]; i <= tab_index_fin[my_rank]; i++)	// p <-- z + beta*p
 			p[i] = z[i] + beta * p[i];
 
 		iter++;
