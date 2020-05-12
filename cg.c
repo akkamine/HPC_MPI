@@ -205,16 +205,16 @@ void extract_diagonal(const struct csr_matrix_t *A, double *d)
 }
 
 /* Matrix-vector product (with A in CSR format) : y = Ax */
-void sp_gemv(const struct csr_matrix_t *A, const double *x, double *y)
+void sp_gemv(const struct csr_matrix_t *A, const double *x, double *y, deb, fin)
 {
-	int n = A->n;
+
 	int *Ap = A->Ap;
 	int *Aj = A->Aj;
 	double *Ax = A->Ax;
 	int u,j;
 
 	//MPI_Allgatherv(x,n,MPI_DOUBLE,xglobal,row_count,row_disp,MPI_DOUBLE,MPI_COMM_WORLD);
-	for (int i = 0; i < n; i++) {
+	for (int i = deb; i <= fin; i++) {
 		y[i] = 0;
 		for (u = Ap[i]; u < Ap[i + 1]; u++) {
 			j = Aj[u];
@@ -257,10 +257,10 @@ void cg_solve(const struct csr_matrix_t *A, const double *b, double *x, const do
 {
 
 	if(my_rank == 0){
-		if(n % nb_proc != 0)
-			MPI_Abort(MPI_COMM_WORLD, -1); // A regler plus tard
 		int n = A->n;
 		int nz = A->nz;
+		if(n % nb_proc != 0)
+			MPI_Abort(MPI_COMM_WORLD, -1); // A regler plus tard
 	}
 
 	MPI_Bcast(n, 1, MPI_INT, 0, MPI_COMM_WORLD);
@@ -271,8 +271,8 @@ void cg_solve(const struct csr_matrix_t *A, const double *b, double *x, const do
 
 
 
-	tab_index_deb = malloc(sizeof(int)*nb_proc);
-	tab_index_fin = malloc(sizeof(int)*nb_proc);
+	int* tab_index_deb = malloc(sizeof(int)*nb_proc);
+	int* tab_index_fin = malloc(sizeof(int)*nb_proc);
 
 	for(int i = 0; i < nb_proc; i++){
 		tab_index_deb[i] = nb_ligne * i;
@@ -401,6 +401,7 @@ int main(int argc, char **argv)
 	MPI_Init(&argc, &argv);
 	MPI_Comm_size(MPI_COMM_WORLD, &nb_proc);
 	MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
+	struct csr_matrix_t *A;
 
 	if(my_rank == 0){
 		/* Load the matrix */
@@ -410,7 +411,7 @@ int main(int argc, char **argv)
 			if (f_mat == NULL)
 				err(1, "cannot matrix file %s", matrix_filename);
 		}
-		struct csr_matrix_t *A = load_mm(f_mat);
+		A = load_mm(f_mat);
 
 		/* Allocate memory */
 		int n = A->n;
