@@ -205,7 +205,7 @@ void extract_diagonal(const struct csr_matrix_t *A, double *d)
 }
 
 /* Matrix-vector product (with A in CSR format) : y = Ax */
-void sp_gemv(const struct csr_matrix_t *A, const double *x, double *y, deb, fin)
+void sp_gemv(const struct csr_matrix_t *A, const double *x, double *y, int deb, int fin)
 {
 
 	int *Ap = A->Ap;
@@ -256,9 +256,11 @@ double norm(const int n, const double *x)
 void cg_solve(const struct csr_matrix_t *A, const double *b, double *x, const double epsilon, double *scratch, int nb_proc, int my_rank)
 {
 
+	int n;
+	int nz;
 	if(my_rank == 0){
-		int n = A->n;
-		int nz = A->nz;
+		n = A->n;
+		nz = A->nz;
 		if(n % nb_proc != 0)
 			MPI_Abort(MPI_COMM_WORLD, -1); // A regler plus tard
 	}
@@ -401,7 +403,10 @@ int main(int argc, char **argv)
 	MPI_Init(&argc, &argv);
 	MPI_Comm_size(MPI_COMM_WORLD, &nb_proc);
 	MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
-	struct csr_matrix_t *A;
+	struct csr_matrix_t *A = NULL;
+	double* b = NULL;
+	double* x = NULL;
+	double* scratch = NULL;
 
 	if(my_rank == 0){
 		/* Load the matrix */
@@ -418,9 +423,9 @@ int main(int argc, char **argv)
 		double *mem = malloc(7 * n * sizeof(double));
 		if (mem == NULL)
 			err(1, "cannot allocate dense vectors");
-		double *x = mem;	/* solution vector */
-		double *b = mem + n;	/* right-hand side */
-		double *scratch = mem + 2 * n;	/* workspace for cg_solve() */
+		x = mem;	/* solution vector */
+		b = mem + n;	/* right-hand side */
+		scratch = mem + 2 * n;	/* workspace for cg_solve() */
 
 		/* Prepare right-hand size */
 		if (rhs_filename){	/* load from file */
@@ -445,14 +450,14 @@ int main(int argc, char **argv)
 	cg_solve(A, b, x, THRESHOLD, scratch, nb_proc, my_rank);
 
 	if(my_rank == 0){
-		/* Check result */
+		/* Check result 
 		if (safety_check) {
 			double *y = scratch;
 			sp_gemv(A, x, y);	// y = Ax
 			for (int i = 0; i < n; i++)	// y = Ax - b
 				y[i] -= b[i];
 			fprintf(stderr, "[check] max error = %2.2e\n", norm(n, y));
-		}
+		}*/
 
 		/* Dump the solution vector */
 		FILE *f_x = stdout;
