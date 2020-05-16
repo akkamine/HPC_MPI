@@ -190,7 +190,7 @@ struct csr_matrix_t *load_mm(FILE * f)
 /*************************** Matrix accessors *********************************/
 
 /* Copy the diagonal of A into the vector d. */
-void extract_diagonal(const struct csr_matrix_t *A, double *d)
+void extract_diagonal(const struct csr_matrix_t *A, double *d/*, int my_rank*/)
 {
 	int n = A->n;
 	int *Ap = A->Ap;
@@ -202,6 +202,8 @@ void extract_diagonal(const struct csr_matrix_t *A, double *d)
 			if (i == Aj[u])
 				d[i] += Ax[u];
 	}
+	//fprintf(stderr, "my_rank = %d, d[0] = %f\n", my_rank, d[2]);
+
 }
 
 /* Matrix-vector product (with A in CSR format) : y = Ax */
@@ -246,74 +248,85 @@ double norm(const int n, const double *x)
 /* Solve Ax == b (the solution is written in x). Scratch must be preallocated of size 6n */
 void cg_solve(const struct csr_matrix_t *A, const double *b, double *x, const double epsilon, int my_rank, int nb_proc, double *scratch)
 {
-	fprintf(stderr, "rank == %d welcome in cg_solve n = %d, b[0] = %f, Ax[0]= %f \n", my_rank, A->n, b[0], A->Ax[0]);
+	//fprintf(stderr, "rank == %d welcome in cg_solve n = %d, b[0] = %f, Ax[0]= %f \n", my_rank, A->n, b[0], A->Ax[0]);
 
 	int n = A->n;
 	int nz = A->nz;
-	int nb_ligne = n / nb_proc;
+	//int nb_ligne = n / nb_proc;
+	int tab_index_deb[nb_proc];
+	int tab_index_fin[nb_proc];
+	int tab_nb_ligne[nb_proc];
 
-	/*if(n % nb_proc == 0){
-        //simplest case, same number of lines
-        for(int i = 0; i < num_of_proc; i++){
-            table1[i] = n/num_of_proc;
-            table2[i] = (n/num_of_proc) * i;
-        }
+	int test = n % nb_proc;
+	if(test == 0){
+    //simplest case, same number of lines
+    for(int i = 0; i < nb_proc; i++){
+      tab_nb_ligne[i] = n/nb_proc;
+			tab_index_deb[i] = (n/nb_proc) * i;
+      tab_index_fin[i] = (n/nb_proc) * (i+1);
     }
-    else{
-        for(int i = 0; i < num_of_proc; i++){
-            //+1 line for each of the first rem processes
-            if(i < rem)
-                table1[i] = (n/num_of_proc) +1;
-            else
-                table1[i] = n/num_of_proc;
-            //calculate index of starting line accordingly
-            if(i <= rem)
-                table2[i] = ((n/num_of_proc) +1) * i;
-            else
-                table2[i] = (n/num_of_proc) * i + rem;
-        }
+	}
+  else{
+    for(int i = 0; i < nb_proc; i++){
+      //+1 line for each of the first test processes
+      if(i < test)
+        tab_nb_ligne[i] = (n/nb_proc) +1;
+      else
+        tab_nb_ligne[i] = n/nb_proc;
+      //calculate index of starting line accordingly
+      if(i <= test){
+        tab_index_deb[i] = ((n/nb_proc) +1) * i;
+				tab_index_fin[i] = ((n/nb_proc) +1) * (i+1);
+			}
+      else{
+        tab_index_deb[i] = (n/nb_proc) * i + test;
+				tab_index_fin[i] = (n/nb_proc) * (i+1) + test;
+			}
     }
-		*/
+  }
 
 	if(my_rank == 0){
 
 		fprintf(stderr, "[CG] Starting iterative solver\n");
 		fprintf(stderr, "     ---> Working set : %.1fMbyte\n", 1e-6 * (12.0 * nz + 52.0 * n));
 		fprintf(stderr, "     ---> Per iteration: %.2g FLOP in sp_gemv() and %.2g FLOP in the rest\n", 2. * nz, 12. * n);
+	}
 
-		double *r = scratch;	        // residue
-		double *z = scratch + n;	// preconditioned-residue
-		double *p = scratch + 2 * n;	// search direction
-		double *q = scratch + 3 * n;	// q == Ap
-		double *d = scratch + 4 * n;	// diagonal entries of A (Jacobi preconditioning)
+	double *r = scratch;	        // residue
+	double *z = scratch + n;	// preconditioned-residue
+	double *p = scratch + 2 * n;	// search direction
+	double *q = scratch + 3 * n;	// q == Ap
+	double *d = scratch + 4 * n;	// diagonal entries of A (Jacobi preconditioning)
 
-		/* Isolate diagonal */
-		extract_diagonal(A, d);
+	/* Isolate diagonal */
+	extract_diagonal(A, d);
+	/*
+	 * This function follows closely the pseudo-code given in the (english)
+	 * Wikipedia page "Conjugate gradient method". This is the version with
+	 * preconditionning.
+	 */
+	 /* We use x == 0 --- this avoids the first matrix-vector product. */
+	for (int i = tab_index_deb[my_rank]; i < tab_index_fin[my_rank]; i++)
+		x[i] = 0.0;
+	for (int i = tab_index_deb[my_rank]; i < tab_index_fin[my_rank]; i++)	// r <-- b - Ax == b
+		r[i] = b[i];
+	for (int i = tab_index_deb[my_rank]; i < tab_index_fin[my_rank]; i++)	// z <-- M^(-1).r
+		z[i] = r[i] / d[i];
+	for (int i = tab_index_deb[my_rank]; i < tab_index_fin[my_rank]; i++)	// p <-- z
+		p[i] = z[i];
 
-		/*
-		 * This function follows closely the pseudo-code given in the (english)
-		 * Wikipedia page "Conjugate gradient method". This is the version with
-		 * preconditionning.
-		 */
+	//MPI_Barrier(MPI_COMM_WORLD);
 
-		/* We use x == 0 --- this avoids the first matrix-vector product. */
-		for (int i = 0; i < n; i++)
-			x[i] = 0.0;
-		for (int i = 0; i < n; i++)	// r <-- b - Ax == b
-			r[i] = b[i];
-		for (int i = 0; i < n; i++)	// z <-- M^(-1).r
-			z[i] = r[i] / d[i];
-		for (int i = 0; i < n; i++)	// p <-- z
-			p[i] = z[i];
+	double rz = dot(n, r, z);
 
-		double rz = dot(n, r, z);
+	if(my_rank == 0){
 		double start = wtime();
 		double last_display = start;
 		int iter = 0;
 		while (norm(n, r) > epsilon) {
-			/* loop invariant : rz = dot(r, z) */
+			// loop invariant : rz = dot(r, z)
 			double old_rz = rz;
-			sp_gemv(A, p, q);	/* q <-- A.p */
+			sp_gemv(A, p, q);	// q <-- A.p
 			double alpha = old_rz / dot(n, p, q);
 			for (int i = 0; i < n; i++)	// x <-- x + alpha*p
 				x[i] += alpha * p[i];
@@ -328,7 +341,7 @@ void cg_solve(const struct csr_matrix_t *A, const double *b, double *x, const do
 			iter++;
 			double t = wtime();
 			if (t - last_display > 0.5) {
-				/* verbosity */
+				// verbosity
 				double rate = iter / (t - start);	// iterations per s.
 				double GFLOPs = 1e-9 * rate * (2 * nz + 12 * n);
 				fprintf(stderr, "\r     ---> error : %2.2e, iter : %d (%.1f it/s, %.2f GFLOPs)", norm(n, r), iter, rate, GFLOPs);
@@ -337,7 +350,8 @@ void cg_solve(const struct csr_matrix_t *A, const double *b, double *x, const do
 			}
 		}
 		fprintf(stderr, "\n     ---> Finished in %.1fs and %d iterations\n", wtime() - start, iter);
-}
+	}
+
 }
 
 /******************************* main program *********************************/
@@ -435,7 +449,7 @@ int main(int argc, char **argv)
 	MPI_Bcast(Ax , nz, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
 	MPI_Barrier(MPI_COMM_WORLD);
-	fprintf(stderr, "rank = %d, n = %d, nz = %d, Ax[0]= %f\n", my_rank, n, nz, Ax[0]);
+	//fprintf(stderr, "rank = %d, n = %d, nz = %d, Ax[0]= %f\n", my_rank, n, nz, Ax[0]);
 	MPI_Barrier(MPI_COMM_WORLD);
 
 	A2->n = n;

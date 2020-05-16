@@ -1,8 +1,8 @@
 # your choice of compiler
-CC = mpicc
+CC = ~/opt/usr/local/bin/mpicc
 
 # Add your choice of flags
-CFLAGS = -O3 -Wall -Wextra -g
+CFLAGS = -O3 -Wall -Wextra -g -m64
 LDLIBS = -lm
 MATRIX = cfd1.mtx
 
@@ -14,8 +14,8 @@ cg_mpi : cg_mpi.o mmio.o
 mmio.o : mmio.c mmio.h
 cg_mpi.o : cg_mpi.c mmio.h
 
-exec_mpi : cg_mpi
-	mpiexec -n 2 ./$< --matrix ${MATRIX} --seed 23 > /dev/null
+exec : cg_mpi
+	 ~/opt/usr/local/bin/mpiexec -n 2 ./$< --matrix ${MATRIX} --seed 23 > /dev/null
 
 .PHONY: clean
 clean :
