@@ -207,13 +207,13 @@ void extract_diagonal(const struct csr_matrix_t *A, double *d/*, int my_rank*/)
 }
 
 /* Matrix-vector product (with A in CSR format) : y = Ax */
-void sp_gemv(const struct csr_matrix_t *A, const double *x, double *y)
+void sp_gemv(const struct csr_matrix_t *A, const double *x, double *y, deb, fin)
 {
-	int n = A->n;
+	//int n = A->n;
 	int *Ap = A->Ap;
 	int *Aj = A->Aj;
 	double *Ax = A->Ax;
-	for (int i = 0; i < n; i++) {
+	for (int i = deb; i < fin; i++) {
 		y[i] = 0;
 		for (int u = Ap[i]; u < Ap[i + 1]; u++) {
 			int j = Aj[u];
@@ -232,6 +232,21 @@ double dot(const int n, const double *x, const double *y)
 	for (int i = 0; i < n; i++)
 		sum += x[i] * y[i];
 	return sum;
+}
+
+void norm_carre(const int deb, const int fin, double *x)
+{
+	double sum = 0.0;
+	for (int i = deb; i < fin; i++)
+		x[i] = x[i] * x[i];
+}
+
+double norm_parallel(const int n, const double *x)
+{
+	double sum = 0.0;
+	for (int i = 0; i < n; i++)
+		sum += x[i];
+	return sqrt(sum);
 }
 
 /* euclidean norm (a.k.a 2-norm) */
@@ -318,15 +333,18 @@ void cg_solve(const struct csr_matrix_t *A, const double *b, double *x, const do
 	//MPI_Barrier(MPI_COMM_WORLD);
 
 	double rz = dot(n, r, z);
+	fprintf(stderr, "rz = %f\n", rz);
 
-	if(my_rank == 0){
+
+	/*if(my_rank == 0){
 		double start = wtime();
 		double last_display = start;
 		int iter = 0;
 		while (norm(n, r) > epsilon) {
 			// loop invariant : rz = dot(r, z)
 			double old_rz = rz;
-			sp_gemv(A, p, q);	// q <-- A.p
+			sp_gemv(A, p, q, tab_index_deb[my_rank], tab_index_fin[my_rank]);	// q <-- A.p
+
 			double alpha = old_rz / dot(n, p, q);
 			for (int i = 0; i < n; i++)	// x <-- x + alpha*p
 				x[i] += alpha * p[i];
@@ -350,7 +368,7 @@ void cg_solve(const struct csr_matrix_t *A, const double *b, double *x, const do
 			}
 		}
 		fprintf(stderr, "\n     ---> Finished in %.1fs and %d iterations\n", wtime() - start, iter);
-	}
+	}*/
 
 }
 
@@ -417,6 +435,7 @@ int main(int argc, char **argv)
 
 
 	FILE *f_mat = stdin;
+
 	if(my_rank == 0){
 		/* Load the matrix */
 		FILE *f_mat = stdin;
@@ -448,9 +467,9 @@ int main(int argc, char **argv)
 	MPI_Bcast(Aj , nz, MPI_INT, 0, MPI_COMM_WORLD);
 	MPI_Bcast(Ax , nz, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
-	MPI_Barrier(MPI_COMM_WORLD);
+	//MPI_Barrier(MPI_COMM_WORLD);
 	//fprintf(stderr, "rank = %d, n = %d, nz = %d, Ax[0]= %f\n", my_rank, n, nz, Ax[0]);
-	MPI_Barrier(MPI_COMM_WORLD);
+	//MPI_Barrier(MPI_COMM_WORLD);
 
 	A2->n = n;
 	A2->nz = nz;
@@ -524,7 +543,7 @@ int main(int argc, char **argv)
 		/* Check result */
 		if (safety_check) {
 			y = scratch;
-			sp_gemv(A, x, y);	// y = Ax
+			sp_gemv(A, x, y, 0, n);	// y = Ax
 			for (int i = 0; i < n; i++)	// y = Ax - b
 				y[i] -= b[i];
 			fprintf(stderr, "[check] max error = %2.2e\n", norm(n, y));
