@@ -207,7 +207,7 @@ void extract_diagonal(const struct csr_matrix_t *A, double *d/*, int my_rank*/)
 }
 
 /* Matrix-vector product (with A in CSR format) : y = Ax */
-void sp_gemv(const struct csr_matrix_t *A, const double *x, double *y, deb, fin)
+void sp_gemv(const struct csr_matrix_t *A, const double *x, double *y, int deb, int fin)
 {
 	//int n = A->n;
 	int *Ap = A->Ap;
@@ -301,7 +301,6 @@ void cg_solve(const struct csr_matrix_t *A, const double *b, double *x, const do
   }
 
 	if(my_rank == 0){
-
 		fprintf(stderr, "[CG] Starting iterative solver\n");
 		fprintf(stderr, "     ---> Working set : %.1fMbyte\n", 1e-6 * (12.0 * nz + 52.0 * n));
 		fprintf(stderr, "     ---> Per iteration: %.2g FLOP in sp_gemv() and %.2g FLOP in the rest\n", 2. * nz, 12. * n);
@@ -321,41 +320,66 @@ void cg_solve(const struct csr_matrix_t *A, const double *b, double *x, const do
 	 * preconditionning.
 	 */
 	 /* We use x == 0 --- this avoids the first matrix-vector product. */
-	for (int i = tab_index_deb[my_rank]; i < tab_index_fin[my_rank]; i++)
+	for (int i = 0; i < n; i++)
 		x[i] = 0.0;
+
 	for (int i = tab_index_deb[my_rank]; i < tab_index_fin[my_rank]; i++)	// r <-- b - Ax == b
 		r[i] = b[i];
+	MPI_Allgatherv(&(r[tab_index_deb[my_rank]]), tab_nb_ligne[my_rank], MPI_DOUBLE, r, tab_nb_ligne, tab_index_deb ,MPI_DOUBLE, MPI_COMM_WORLD);
+
 	for (int i = tab_index_deb[my_rank]; i < tab_index_fin[my_rank]; i++)	// z <-- M^(-1).r
 		z[i] = r[i] / d[i];
+	MPI_Allgatherv(&(z[tab_index_deb[my_rank]]), tab_nb_ligne[my_rank], MPI_DOUBLE, z, tab_nb_ligne, tab_index_deb ,MPI_DOUBLE, MPI_COMM_WORLD);
+
 	for (int i = tab_index_deb[my_rank]; i < tab_index_fin[my_rank]; i++)	// p <-- z
 		p[i] = z[i];
-
+	MPI_Allgatherv(&(p[tab_index_deb[my_rank]]), tab_nb_ligne[my_rank], MPI_DOUBLE, p, tab_nb_ligne, tab_index_deb ,MPI_DOUBLE, MPI_COMM_WORLD);
 	//MPI_Barrier(MPI_COMM_WORLD);
 
 	double rz = dot(n, r, z);
-	fprintf(stderr, "rz = %f\n", rz);
+	//MPI_Barrier(MPI_COMM_WORLD);
 
+	//MPI_Allreduce(&rz, &rz, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+	//fprintf(stderr, "rz = %f\n", rz);
+	//fprintf(stderr, "rank = %d, p = %f\n",my_rank, norm(n, p));
 
-	/*if(my_rank == 0){
-		double start = wtime();
-		double last_display = start;
-		int iter = 0;
-		while (norm(n, r) > epsilon) {
-			// loop invariant : rz = dot(r, z)
-			double old_rz = rz;
-			sp_gemv(A, p, q, tab_index_deb[my_rank], tab_index_fin[my_rank]);	// q <-- A.p
+	double start;
+	double last_display;
+	int iter;
 
-			double alpha = old_rz / dot(n, p, q);
-			for (int i = 0; i < n; i++)	// x <-- x + alpha*p
-				x[i] += alpha * p[i];
-			for (int i = 0; i < n; i++)	// r <-- r - alpha*q
-				r[i] -= alpha * q[i];
-			for (int i = 0; i < n; i++)	// z <-- M^(-1).r
-				z[i] = r[i] / d[i];
-			rz = dot(n, r, z);	// restore invariant
-			double beta = rz / old_rz;
-			for (int i = 0; i < n; i++)	// p <-- z + beta*p
-				p[i] = z[i] + beta * p[i];
+	if(my_rank == 0){
+		start = wtime();
+		last_display = start;
+		iter = 0;
+	}
+
+	while (norm(n, r) > epsilon) {
+		// loop invariant : rz = dot(r, z)
+		double old_rz = rz;
+		sp_gemv(A, p, q, tab_index_deb[my_rank], tab_index_fin[my_rank]);	// q <-- A.p
+		MPI_Allgatherv(&(q[tab_index_deb[my_rank]]), tab_nb_ligne[my_rank], MPI_DOUBLE, q, tab_nb_ligne, tab_index_deb ,MPI_DOUBLE, MPI_COMM_WORLD);
+
+		double alpha = old_rz / dot(n, p, q);
+		for (int i = tab_index_deb[my_rank]; i < tab_index_fin[my_rank]; i++)	// x <-- x + alpha*p
+			x[i] += alpha * p[i];
+		MPI_Allgatherv(&(x[tab_index_deb[my_rank]]), tab_nb_ligne[my_rank], MPI_DOUBLE, x, tab_nb_ligne, tab_index_deb ,MPI_DOUBLE, MPI_COMM_WORLD);
+
+		for (int i = tab_index_deb[my_rank]; i < tab_index_fin[my_rank]; i++)	// r <-- r - alpha*q
+			r[i] -= alpha * q[i];
+		MPI_Allgatherv(&(r[tab_index_deb[my_rank]]), tab_nb_ligne[my_rank], MPI_DOUBLE, r, tab_nb_ligne, tab_index_deb ,MPI_DOUBLE, MPI_COMM_WORLD);
+
+		for (int i = tab_index_deb[my_rank]; i < tab_index_fin[my_rank]; i++)	// z <-- M^(-1).r
+			z[i] = r[i] / d[i];
+		MPI_Allgatherv(&(z[tab_index_deb[my_rank]]), tab_nb_ligne[my_rank], MPI_DOUBLE, z, tab_nb_ligne, tab_index_deb ,MPI_DOUBLE, MPI_COMM_WORLD);
+
+		rz = dot(n, r, z);	// restore invariant
+		double beta = rz / old_rz;
+		for (int i = tab_index_deb[my_rank]; i < tab_index_fin[my_rank]; i++)	// p <-- z + beta*p
+			p[i] = z[i] + beta * p[i];
+
+		MPI_Allgatherv(&(p[tab_index_deb[my_rank]]), tab_nb_ligne[my_rank], MPI_DOUBLE, p, tab_nb_ligne, tab_index_deb ,MPI_DOUBLE, MPI_COMM_WORLD);
+
+		if(my_rank == 0){
 			iter++;
 			double t = wtime();
 			if (t - last_display > 0.5) {
@@ -367,8 +391,9 @@ void cg_solve(const struct csr_matrix_t *A, const double *b, double *x, const do
 				last_display = t;
 			}
 		}
+	}
+	if(my_rank == 0)
 		fprintf(stderr, "\n     ---> Finished in %.1fs and %d iterations\n", wtime() - start, iter);
-	}*/
 
 }
 
