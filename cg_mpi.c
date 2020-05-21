@@ -234,12 +234,14 @@ double dot(const int n, const double *x, const double *y)
 	return sum;
 }
 
-void norm_carre(const int deb, const int fin, double *x)
+double dot_parallel(const double *x, const double *y, int deb, int fin)
 {
 	double sum = 0.0;
 	for (int i = deb; i < fin; i++)
-		x[i] = x[i] * x[i];
+		sum += x[i] * y[i];
+	return sum;
 }
+
 
 double norm_parallel(const int n, const double *x)
 {
@@ -275,11 +277,11 @@ void cg_solve(const struct csr_matrix_t *A, const double *b, double *x, const do
 	int test = n % nb_proc;
 	if(test == 0){
     //simplest case, same number of lines
-    for(int i = 0; i < nb_proc; i++){
-      tab_nb_ligne[i] = n/nb_proc;
-			tab_index_deb[i] = (n/nb_proc) * i;
-      tab_index_fin[i] = (n/nb_proc) * (i+1);
-    }
+    	    for(int i = 0; i < nb_proc; i++){
+		tab_nb_ligne[i] = n/nb_proc;
+		tab_index_deb[i] = (n/nb_proc) * i;
+		tab_index_fin[i] = (n/nb_proc) * (i+1);
+    	    }
 	}
   else{
     for(int i = 0; i < nb_proc; i++){
@@ -325,27 +327,28 @@ void cg_solve(const struct csr_matrix_t *A, const double *b, double *x, const do
 
 	for (int i = tab_index_deb[my_rank]; i < tab_index_fin[my_rank]; i++)	// r <-- b - Ax == b
 		r[i] = b[i];
-	MPI_Allgatherv(&(r[tab_index_deb[my_rank]]), tab_nb_ligne[my_rank], MPI_DOUBLE, r, tab_nb_ligne, tab_index_deb ,MPI_DOUBLE, MPI_COMM_WORLD);
+	//MPI_Allgatherv(&(r[tab_index_deb[my_rank]]), tab_nb_ligne[my_rank], MPI_DOUBLE, r, tab_nb_ligne, tab_index_deb ,MPI_DOUBLE, MPI_COMM_WORLD);
 
 	for (int i = tab_index_deb[my_rank]; i < tab_index_fin[my_rank]; i++)	// z <-- M^(-1).r
 		z[i] = r[i] / d[i];
-	MPI_Allgatherv(&(z[tab_index_deb[my_rank]]), tab_nb_ligne[my_rank], MPI_DOUBLE, z, tab_nb_ligne, tab_index_deb ,MPI_DOUBLE, MPI_COMM_WORLD);
+	//MPI_Allgatherv(&(z[tab_index_deb[my_rank]]), tab_nb_ligne[my_rank], MPI_DOUBLE, z, tab_nb_ligne, tab_index_deb ,MPI_DOUBLE, MPI_COMM_WORLD);
 
 	for (int i = tab_index_deb[my_rank]; i < tab_index_fin[my_rank]; i++)	// p <-- z
 		p[i] = z[i];
-	MPI_Allgatherv(&(p[tab_index_deb[my_rank]]), tab_nb_ligne[my_rank], MPI_DOUBLE, p, tab_nb_ligne, tab_index_deb ,MPI_DOUBLE, MPI_COMM_WORLD);
+	//MPI_Allgatherv(&(p[tab_index_deb[my_rank]]), tab_nb_ligne[my_rank], MPI_DOUBLE, p, tab_nb_ligne, tab_index_deb ,MPI_DOUBLE, MPI_COMM_WORLD);
 	//MPI_Barrier(MPI_COMM_WORLD);
 
-	double rz = dot(n, r, z);
+	double rz = dot_parallel(r, z, tab_index_deb[my_rank], tab_index_fin[my_rank]);
 	//MPI_Barrier(MPI_COMM_WORLD);
 
-	//MPI_Allreduce(&rz, &rz, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+	MPI_Allreduce(&rz, &rz, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 	//fprintf(stderr, "rz = %f\n", rz);
 	//fprintf(stderr, "rank = %d, p = %f\n",my_rank, norm(n, p));
 
-	double start;
-	double last_display;
-	int iter;
+	double start=0.;
+	double last_display=0.;
+	int iter=0;
+	double nrm = epsilon +1;
 
 	if(my_rank == 0){
 		start = wtime();
@@ -353,31 +356,36 @@ void cg_solve(const struct csr_matrix_t *A, const double *b, double *x, const do
 		iter = 0;
 	}
 
-	while (norm(n, r) > epsilon) {
+	while (nrm > epsilon) {
 		// loop invariant : rz = dot(r, z)
 		double old_rz = rz;
+		MPI_Allgatherv(&(p[tab_index_deb[my_rank]]), tab_nb_ligne[my_rank], MPI_DOUBLE, p, tab_nb_ligne, tab_index_deb ,MPI_DOUBLE, MPI_COMM_WORLD);
 		sp_gemv(A, p, q, tab_index_deb[my_rank], tab_index_fin[my_rank]);	// q <-- A.p
-		MPI_Allgatherv(&(q[tab_index_deb[my_rank]]), tab_nb_ligne[my_rank], MPI_DOUBLE, q, tab_nb_ligne, tab_index_deb ,MPI_DOUBLE, MPI_COMM_WORLD);
 
-		double alpha = old_rz / dot(n, p, q);
+		double pq = dot_parallel(p, q, tab_index_deb[my_rank], tab_index_fin[my_rank]);
+		MPI_Allreduce(&pq, &pq, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+
+		double alpha = old_rz / pq;
+
 		for (int i = tab_index_deb[my_rank]; i < tab_index_fin[my_rank]; i++)	// x <-- x + alpha*p
 			x[i] += alpha * p[i];
-		MPI_Allgatherv(&(x[tab_index_deb[my_rank]]), tab_nb_ligne[my_rank], MPI_DOUBLE, x, tab_nb_ligne, tab_index_deb ,MPI_DOUBLE, MPI_COMM_WORLD);
 
-		for (int i = tab_index_deb[my_rank]; i < tab_index_fin[my_rank]; i++)	// r <-- r - alpha*q
+    for (int i = tab_index_deb[my_rank]; i < tab_index_fin[my_rank]; i++)	// r <-- r - alpha*q
 			r[i] -= alpha * q[i];
-		MPI_Allgatherv(&(r[tab_index_deb[my_rank]]), tab_nb_ligne[my_rank], MPI_DOUBLE, r, tab_nb_ligne, tab_index_deb ,MPI_DOUBLE, MPI_COMM_WORLD);
+
+		nrm = dot_parallel(r, r, tab_index_deb[my_rank], tab_index_fin[my_rank]);
+		MPI_Allreduce(&nrm, &nrm, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+		nrm = sqrt(nrm);
 
 		for (int i = tab_index_deb[my_rank]; i < tab_index_fin[my_rank]; i++)	// z <-- M^(-1).r
 			z[i] = r[i] / d[i];
-		MPI_Allgatherv(&(z[tab_index_deb[my_rank]]), tab_nb_ligne[my_rank], MPI_DOUBLE, z, tab_nb_ligne, tab_index_deb ,MPI_DOUBLE, MPI_COMM_WORLD);
 
-		rz = dot(n, r, z);	// restore invariant
+		rz = dot_parallel(r, z, tab_index_deb[my_rank], tab_index_fin[my_rank]); // restore invariant
+		MPI_Allreduce(&rz, &rz, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 		double beta = rz / old_rz;
+
 		for (int i = tab_index_deb[my_rank]; i < tab_index_fin[my_rank]; i++)	// p <-- z + beta*p
 			p[i] = z[i] + beta * p[i];
-
-		MPI_Allgatherv(&(p[tab_index_deb[my_rank]]), tab_nb_ligne[my_rank], MPI_DOUBLE, p, tab_nb_ligne, tab_index_deb ,MPI_DOUBLE, MPI_COMM_WORLD);
 
 		if(my_rank == 0){
 			iter++;
@@ -386,7 +394,7 @@ void cg_solve(const struct csr_matrix_t *A, const double *b, double *x, const do
 				// verbosity
 				double rate = iter / (t - start);	// iterations per s.
 				double GFLOPs = 1e-9 * rate * (2 * nz + 12 * n);
-				fprintf(stderr, "\r     ---> error : %2.2e, iter : %d (%.1f it/s, %.2f GFLOPs)", norm(n, r), iter, rate, GFLOPs);
+				fprintf(stderr, "\r     ---> error : %2.2e, iter : %d (%.1f it/s, %.2f GFLOPs)", nrm, iter, rate, GFLOPs);
 				fflush(stdout);
 				last_display = t;
 			}
@@ -395,6 +403,7 @@ void cg_solve(const struct csr_matrix_t *A, const double *b, double *x, const do
 	if(my_rank == 0)
 		fprintf(stderr, "\n     ---> Finished in %.1fs and %d iterations\n", wtime() - start, iter);
 
+  MPI_Allgatherv(&(x[tab_index_deb[my_rank]]), tab_nb_ligne[my_rank], MPI_DOUBLE, x, tab_nb_ligne, tab_index_deb ,MPI_DOUBLE, MPI_COMM_WORLD);
 }
 
 /******************************* main program *********************************/
@@ -443,7 +452,6 @@ int main(int argc, char **argv)
 	int nb_proc;
 	int my_rank;
 
-	MPI_Status status;
 	MPI_Init(&argc, &argv);
 	MPI_Comm_size(MPI_COMM_WORLD, &nb_proc);
 	MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
@@ -452,14 +460,14 @@ int main(int argc, char **argv)
 	struct csr_matrix_t *A2 = malloc(sizeof(*A2));
 	double* x = NULL;
 	double* b = NULL;
-	double* y = NULL;
+	//double* y = NULL;
 	double* scratch = NULL;
 
 	int n = 0;
 	int nz = 0;
 
 
-	FILE *f_mat = stdin;
+	//FILE *f_mat = stdin;
 
 	if(my_rank == 0){
 		/* Load the matrix */
@@ -567,7 +575,7 @@ int main(int argc, char **argv)
 	if(my_rank == 0){
 		/* Check result */
 		if (safety_check) {
-			y = scratch;
+			double* y = scratch;
 			sp_gemv(A, x, y, 0, n);	// y = Ax
 			for (int i = 0; i < n; i++)	// y = Ax - b
 				y[i] -= b[i];
